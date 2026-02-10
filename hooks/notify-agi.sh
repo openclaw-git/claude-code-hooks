@@ -14,10 +14,18 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null || ech
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // "unknown"' 2>/dev/null || echo "unknown")
 
-# 读取 Claude Code 的输出
+# 读取 Claude Code 的输出（多来源，优先级递减）
 OUTPUT=""
+# 来源1: tee 输出文件
 if [ -f "/tmp/claude-code-output.txt" ] && [ -s "/tmp/claude-code-output.txt" ]; then
     OUTPUT=$(head -c 2000 /tmp/claude-code-output.txt)
+fi
+# 来源2: 工作目录中的文件列表
+if [ -z "$OUTPUT" ] && [ -n "$CWD" ] && [ -d "$CWD" ]; then
+    FILES=$(ls -1t "$CWD" 2>/dev/null | head -10 | tr '\n' ', ')
+    if [ -n "$FILES" ]; then
+        OUTPUT="Working dir files: ${FILES}"
+    fi
 fi
 
 # 写入结果文件
