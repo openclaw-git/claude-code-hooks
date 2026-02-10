@@ -6,7 +6,7 @@
 #   ./run-claude-code.sh -p "Write hello.py that prints hello world" --allowedTools "Bash,Read,Edit,Write"
 #   ./run-claude-code.sh -p "Analyze this repo" --permission-mode plan
 
-export OPENCLAW_GATEWAY_TOKEN="477d47934e5f6b02bfb823ba681bb743eae55479b7d260e8"
+export OPENCLAW_GATEWAY_TOKEN=""
 
 # 清理上次的输出文件
 > /tmp/claude-code-output.txt
