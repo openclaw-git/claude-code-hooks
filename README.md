@@ -153,8 +153,52 @@ scripts/dispatch-claude-code.sh \
 
 ---
 
-## 8) 当前状态
+## 8) Code-node 一键部署与一键还原
+
+新增脚本：`scripts/deploy_code_node.sh`
+
+### 一键部署
+
+```bash
+cd /home/lab803/Workspace/claude-code-hooks
+scripts/deploy_code_node.sh deploy
+```
+
+部署动作：
+
+- 自动检查依赖（`jq/python3/openclaw/claude`）
+- 备份 `~/.claude/settings.json`、`~/.claude/env`、`~/.bashrc`
+- **合并** Hook 到 Claude settings（不覆盖已有其他配置）
+- 写入默认环境变量（不写密钥）
+- 运行 smoke test，确认 `result.json` 能生成
+
+### 查看状态
+
+```bash
+scripts/deploy_code_node.sh status
+```
+
+### 一键还原
+
+```bash
+scripts/deploy_code_node.sh rollback
+# 或指定某个备份目录
+scripts/deploy_code_node.sh rollback --backup ~/.openclaw/claude-hook-deploy-backups/<timestamp>
+```
+
+---
+
+## 9) 本次主要问题修复
+
+1. **Hook 配置覆盖问题** → 改为“合并注入”，保留用户原有 `~/.claude/settings.json` 其他内容。  
+2. **缺少可回滚能力** → 新增自动备份与一键回滚。  
+3. **部署后不可验证** → 新增 smoke test（自动验证回调产物）。  
+4. **环境默认值散乱** → 统一在部署脚本写入可选默认值（无硬编码 token）。
+
+---
+
+## 10) 当前状态
 
 - 代码已改完；
-- 未自动部署到生产环境；
-- 适合先在测试机手动验证，再上线。
+- 提供一键部署与一键回滚脚本；
+- 仍建议先在测试机验证，再上线生产。
