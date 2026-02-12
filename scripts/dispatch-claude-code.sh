@@ -1,137 +1,136 @@
-#!/bin/bash
-# dispatch-claude-code.sh — Dispatch a task to Claude Code with auto-callback
-#
-# Usage:
-#   dispatch-claude-code.sh [OPTIONS] -p "your prompt here"
-#
-# Options:
-#   -p, --prompt TEXT        Task prompt (required)
-#   -n, --name NAME          Task name (for tracking)
-#   -g, --group ID           Telegram group ID for result delivery
-#   -s, --session KEY        Callback session key (AGI session to notify)
-#   -w, --workdir DIR        Working directory for Claude Code
-#   --agent-teams            Enable Agent Teams (lead + sub-agents)
-#   --teammate-mode MODE     Agent Teams display mode (auto/in-process/tmux)
-#   --permission-mode MODE   Claude Code permission mode
-#   --allowed-tools TOOLS    Allowed tools string
-#   --model MODEL            Model override
-#
-# The script:
-#   1. Writes task metadata to task-meta.json (hook reads this)
-#   2. Runs Claude Code via claude_code_run.py
-#   3. When Claude Code finishes, Stop hook fires automatically
-#   4. Hook reads meta, writes results, wakes AGI
-#   5. AGI reads results and relays to Telegram group
+#!/usr/bin/env bash
+# Dispatch Claude Code task with OpenClaw-friendly metadata layout.
+# - No hardcoded gateway token
+# - Supports concurrent tasks via task_id isolation
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RESULT_DIR="/home/ubuntu/clawd/data/claude-code-results"
-META_FILE="${RESULT_DIR}/task-meta.json"
-OUTPUT_FILE="/tmp/claude-code-output.txt"
-TASK_OUTPUT="${RESULT_DIR}/task-output.txt"
-RUNNER="/home/ubuntu/clawd/skills/claude-code-clawdbot/scripts/claude_code_run.py"
+usage(){
+  cat <<'EOF'
+Usage:
+  dispatch-claude-code.sh -p "<prompt>" [options]
 
-# Defaults
+Options:
+  -p, --prompt TEXT           Task prompt (required)
+  -n, --name NAME             Task name (default: adhoc-<timestamp>)
+  -w, --workdir DIR           Claude working directory (default: current dir)
+  -c, --channel NAME          Notify channel (default: feishu)
+  -t, --target ID             Notify target/chat id (optional)
+  -s, --session KEY           Callback session key (optional)
+      --result-root DIR       Result root (default: ~/.openclaw/claude-code-results)
+      --task-id ID            Custom task id (default auto)
+      --agent-teams           Enable Agent Teams
+      --teammate-mode MODE    auto|in-process|tmux
+      --permission-mode MODE  pass through to claude
+      --allowed-tools TOOLS   pass through to claude
+      --model MODEL           model override
+
+Examples:
+  dispatch-claude-code.sh -p "分析仓库并给出重构方案" -n "repo-audit" -c feishu -t "ou_xxx"
+  dispatch-claude-code.sh -p "重构测试" --agent-teams --teammate-mode auto
+EOF
+}
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RUNNER="${CLAUDE_RUNNER:-$SCRIPT_DIR/claude_code_run.py}"
+
 PROMPT=""
-TASK_NAME="adhoc-$(date +%s)"
-TELEGRAM_GROUP=""
+TASK_NAME=""
+WORKDIR="$(pwd)"
+CHANNEL="feishu"
+TARGET=""
 CALLBACK_SESSION=""
-WORKDIR="/home/ubuntu/clawd"
-AGENT_TEAMS=""
+RESULT_ROOT="${OPENCLAW_HOOK_RESULT_ROOT:-$HOME/.openclaw/claude-code-results}"
+TASK_ID=""
+AGENT_TEAMS="0"
 TEAMMATE_MODE=""
 PERMISSION_MODE=""
 ALLOWED_TOOLS=""
 MODEL=""
 
-# Parse args
 while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -p|--prompt) PROMPT="$2"; shift 2;;
-        -n|--name) TASK_NAME="$2"; shift 2;;
-        -g|--group) TELEGRAM_GROUP="$2"; shift 2;;
-        -s|--session) CALLBACK_SESSION="$2"; shift 2;;
-        -w|--workdir) WORKDIR="$2"; shift 2;;
-        --agent-teams) AGENT_TEAMS="1"; shift;;
-        --teammate-mode) TEAMMATE_MODE="$2"; shift 2;;
-        --permission-mode) PERMISSION_MODE="$2"; shift 2;;
-        --allowed-tools) ALLOWED_TOOLS="$2"; shift 2;;
-        --model) MODEL="$2"; shift 2;;
-        *) echo "Unknown option: $1" >&2; exit 1;;
-    esac
+  case "$1" in
+    -p|--prompt) PROMPT="$2"; shift 2;;
+    -n|--name) TASK_NAME="$2"; shift 2;;
+    -w|--workdir) WORKDIR="$2"; shift 2;;
+    -c|--channel) CHANNEL="$2"; shift 2;;
+    -t|--target) TARGET="$2"; shift 2;;
+    -s|--session) CALLBACK_SESSION="$2"; shift 2;;
+    --result-root) RESULT_ROOT="$2"; shift 2;;
+    --task-id) TASK_ID="$2"; shift 2;;
+    --agent-teams) AGENT_TEAMS="1"; shift;;
+    --teammate-mode) TEAMMATE_MODE="$2"; shift 2;;
+    --permission-mode) PERMISSION_MODE="$2"; shift 2;;
+    --allowed-tools) ALLOWED_TOOLS="$2"; shift 2;;
+    --model) MODEL="$2"; shift 2;;
+    -h|--help) usage; exit 0;;
+    *) echo "Unknown option: $1" >&2; usage; exit 1;;
+  esac
 done
 
 if [ -z "$PROMPT" ]; then
-    echo "Error: --prompt is required" >&2
-    exit 1
+  echo "Error: --prompt is required" >&2
+  usage
+  exit 1
 fi
 
-# ---- 1. Write task metadata ----
-mkdir -p "$RESULT_DIR"
+if [ -z "$TASK_NAME" ]; then
+  TASK_NAME="adhoc-$(date +%Y%m%d_%H%M%S)"
+fi
+if [ -z "$TASK_ID" ]; then
+  if command -v uuidgen >/dev/null 2>&1; then
+    TASK_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  else
+    TASK_ID="$(date +%s)-$$"
+  fi
+fi
+
+TASK_DIR="$RESULT_ROOT/tasks/$TASK_ID"
+META_FILE="$TASK_DIR/meta.json"
+OUTPUT_FILE="$TASK_DIR/output.log"
+mkdir -p "$TASK_DIR"
 
 jq -n \
-    --arg name "$TASK_NAME" \
-    --arg group "$TELEGRAM_GROUP" \
-    --arg session "$CALLBACK_SESSION" \
-    --arg prompt "$PROMPT" \
-    --arg workdir "$WORKDIR" \
-    --arg ts "$(date -Iseconds)" \
-    --arg agent_teams "${AGENT_TEAMS:-0}" \
-    '{task_name: $name, telegram_group: $group, callback_session: $session, prompt: $prompt, workdir: $workdir, started_at: $ts, agent_teams: ($agent_teams == "1"), status: "running"}' \
-    > "$META_FILE"
+  --arg task_id "$TASK_ID" \
+  --arg task_name "$TASK_NAME" \
+  --arg prompt "$PROMPT" \
+  --arg workdir "$WORKDIR" \
+  --arg callback_session "$CALLBACK_SESSION" \
+  --arg channel "$CHANNEL" \
+  --arg target "$TARGET" \
+  --arg started_at "$(date -Iseconds)" \
+  --argjson agent_teams "$AGENT_TEAMS" \
+  '{task_id:$task_id,task_name:$task_name,prompt:$prompt,workdir:$workdir,callback_session:$callback_session,notify:{channel:$channel,target:$target},agent_teams:($agent_teams==1),status:"running",started_at:$started_at}' \
+  > "$META_FILE"
 
-echo "📋 Task metadata written: $META_FILE"
-echo "   Task: $TASK_NAME"
-echo "   Group: ${TELEGRAM_GROUP:-none}"
-echo "   Agent Teams: ${AGENT_TEAMS:-no}"
+# Make hook context explicit; no hardcoded OPENCLAW_GATEWAY_TOKEN here
+export OPENCLAW_HOOK_RESULT_ROOT="$RESULT_ROOT"
+export OPENCLAW_HOOK_TASK_ID="$TASK_ID"
 
-# ---- 2. Clear previous output ----
-> "$OUTPUT_FILE"
-> "$TASK_OUTPUT"
-
-# ---- 3. Build runner command ----
 CMD=(python3 "$RUNNER" -p "$PROMPT" --cwd "$WORKDIR")
+[ -n "$PERMISSION_MODE" ] && CMD+=(--permission-mode "$PERMISSION_MODE")
+[ -n "$ALLOWED_TOOLS" ] && CMD+=(--allowedTools "$ALLOWED_TOOLS")
+[ "$AGENT_TEAMS" = "1" ] && CMD+=(--agent-teams)
+[ -n "$TEAMMATE_MODE" ] && CMD+=(--teammate-mode "$TEAMMATE_MODE")
+[ -n "$MODEL" ] && export ANTHROPIC_MODEL="$MODEL"
 
-if [ -n "$AGENT_TEAMS" ]; then
-    CMD+=(--agent-teams)
-fi
-if [ -n "$TEAMMATE_MODE" ]; then
-    CMD+=(--teammate-mode "$TEAMMATE_MODE")
-fi
-if [ -n "$PERMISSION_MODE" ]; then
-    CMD+=(--permission-mode "$PERMISSION_MODE")
-fi
-if [ -n "$ALLOWED_TOOLS" ]; then
-    CMD+=(--allowedTools "$ALLOWED_TOOLS")
-fi
+echo "🚀 Dispatch Claude Code"
+echo "   task_id:   $TASK_ID"
+echo "   task_name: $TASK_NAME"
+echo "   workdir:   $WORKDIR"
+echo "   notify:    ${CHANNEL}:${TARGET:-<none>}"
+echo
 
-# ---- 4. Set environment ----
-export OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-477d47934e5f6b02bfb823ba681bb743eae55479b7d260e8}"
-export OPENCLAW_GATEWAY="${OPENCLAW_GATEWAY:-http://127.0.0.1:18789}"
-
-if [ -n "$MODEL" ]; then
-    export ANTHROPIC_MODEL="$MODEL"
-fi
-
-# ---- 5. Run Claude Code (output tee'd for hook) ----
-echo "🚀 Launching Claude Code..."
-echo "   Command: ${CMD[*]}"
-echo ""
-
-# Use tee to capture output while also displaying it
-"${CMD[@]}" 2>&1 | tee "$TASK_OUTPUT"
+"${CMD[@]}" 2>&1 | tee "$OUTPUT_FILE"
 EXIT_CODE=${PIPESTATUS[0]}
 
-echo ""
-echo "✅ Claude Code exited with code: $EXIT_CODE"
-echo "   Hook should have fired automatically."
-echo "   Results: ${RESULT_DIR}/latest.json"
+jq --arg ts "$(date -Iseconds)" --arg code "$EXIT_CODE" '. + {completed_at:$ts, exit_code:($code|tonumber), status:"done"}' "$META_FILE" >"${META_FILE}.tmp"
+mv "${META_FILE}.tmp" "$META_FILE"
 
-# Update meta with completion
-if [ -f "$META_FILE" ]; then
-    jq --arg code "$EXIT_CODE" --arg ts "$(date -Iseconds)" \
-        '. + {exit_code: ($code | tonumber), completed_at: $ts, status: "done"}' \
-        "$META_FILE" > "${META_FILE}.tmp" && mv "${META_FILE}.tmp" "$META_FILE"
-fi
+echo
+echo "✅ finished: exit_code=$EXIT_CODE"
+echo "   meta:   $META_FILE"
+echo "   output: $OUTPUT_FILE"
+echo "   result: $TASK_DIR/result.json (generated by hook)"
 
-exit $EXIT_CODE
+exit "$EXIT_CODE"

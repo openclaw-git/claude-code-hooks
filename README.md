@@ -1,104 +1,160 @@
-# Claude Code Stop Hook — 任务完成自动回调
+# OpenClaw-Feishu 优化版 Claude Code Hooks
 
-当 Claude Code（含 Agent Teams）完成任务后，自动：
-1. 将结果写入 JSON 文件
-2. 发送 聊天软件 通知到指定群组
-3. 写入 pending-wake 文件供 AGI 主会话读取
+这是基于 `win4r/claude-code-hooks` 的优化版本，目标是：
 
-## 架构
+- ✅ 兼容 OpenClaw 当前目录规范
+- ✅ 支持多任务并发（每个 task 独立目录）
+- ✅ 不含任何硬编码 token
+- ✅ 默认可走 Feishu 通知（也支持 telegram/其他 channel）
+- ✅ 仍兼容 Claude Code Stop/SessionEnd Hook 机制
+
+---
+
+## 1) 改进点总览
+
+### A. 并发隔离
+原版大量使用全局单文件（如 `task-meta.json` / `latest.json`），并发任务会覆盖。
+
+本版改为：
 
 ```
-dispatch-claude-code.sh
-  │
-  ├─ 写入 task-meta.json（任务名、目标群组）
-  ├─ 启动 Claude Code（via claude_code_run.py）
-  │   └─ Agent Teams lead + sub-agents 运行
-  │
-  └─ Claude Code 完成 → Stop Hook 自动触发
-      │
-      ├─ notify-agi.sh 执行：
-      │   ├─ 读取 task-meta.json + task-output.txt
-      │   ├─ 写入 latest.json（完整结果）
-      │   ├─ openclaw message send → 聊天软件 群
-      │   └─ 写入 pending-wake.json
-      │
-      └─ AGI heartbeat 读取 pending-wake.json（备选）
+~/.openclaw/claude-code-results/
+  tasks/
+    <task_id>/
+      meta.json
+      output.log
+      result.json
+      pending-wake.json
+      .hook-lock
 ```
 
-## 文件说明
+每个任务一个 `task_id` 目录，避免串线。
 
-| 文件 | 位置 | 作用 |
-|------|------|------|
-| `hooks/notify-agi.sh` | `~/.claude/hooks/` | Stop Hook 脚本 |
-| `hooks/claude-settings.json` | `~/.claude/settings.json` | Claude Code 配置（注册 hook）|
-| `scripts/dispatch-claude-code.sh` | 任意位置 | 一键派发任务 |
-| `scripts/claude_code_run.py` | 任意位置 | Claude Code PTY 运行器 |
+### B. 无硬编码密钥
+- 移除了脚本中的默认 `OPENCLAW_GATEWAY_TOKEN` 回退值。
+- 所有鉴权依赖外部环境变量/系统配置注入。
 
-## 使用方法
+### C. 通知渠道参数化
+- `dispatch-claude-code.sh` 支持 `--channel`、`--target`。
+- hook 使用 `openclaw message send --channel <channel> --target <target>`。
 
-### 基础任务
+### D. 去重锁从“全局”改为“每任务”
+- 原版 30 秒锁是全局锁，可能误伤并发任务。
+- 本版使用 `<task_id>/.hook-lock`，互不影响。
+
+---
+
+## 2) 目录结构
+
+- `hooks/notify-agi.sh`：Stop / SessionEnd 回调主逻辑（已优化）
+- `scripts/dispatch-claude-code.sh`：任务派发入口（支持并发参数）
+- `scripts/claude_code_run.py`：Claude CLI PTY/tmux 兼容运行器（保留）
+- `scripts/run-claude-code.sh`：轻量 runner（移除硬编码 token）
+
+---
+
+## 3) 使用方式
+
+> 注意：本仓库当前仅交付代码，不做自动部署。
+
+### 基础调用
+
 ```bash
-dispatch-claude-code.sh \
-  -p "实现一个 Python 爬虫" \
-  -n "my-scraper" \
-  -g "-5189558203" \
-  --permission-mode "bypassPermissions" \
-  --workdir "/home/ubuntu/projects/scraper"
+scripts/dispatch-claude-code.sh \
+  -p "分析当前项目并给出重构建议" \
+  -n "repo-audit" \
+  -w "/path/to/project" \
+  -c feishu \
+  -t "ou_xxx"
 ```
 
-### Agent Teams 任务
+### 并发调用（不同 task_id 自动隔离）
+
 ```bash
-dispatch-claude-code.sh \
-  -p "重构整个项目的测试" \
-  -n "test-refactor" \
-  -g "-5189558203" \
+scripts/dispatch-claude-code.sh -p "任务A" -n "task-a" -c feishu -t "ou_xxx" &
+scripts/dispatch-claude-code.sh -p "任务B" -n "task-b" -c feishu -t "ou_xxx" &
+wait
+```
+
+### Agent Teams
+
+```bash
+scripts/dispatch-claude-code.sh \
+  -p "重构测试并补齐CI" \
   --agent-teams \
   --teammate-mode auto \
-  --permission-mode "bypassPermissions" \
-  --workdir "/home/ubuntu/projects/myapp"
+  --permission-mode bypassPermissions \
+  -c feishu -t "ou_xxx"
 ```
 
-### 参数
+---
 
-| 参数 | 说明 |
-|------|------|
-| `-p, --prompt` | 任务提示（必需）|
-| `-n, --name` | 任务名称（用于跟踪）|
-| `-g, --group` | 聊天软件 群组 ID（结果自动发送）|
-| `-w, --workdir` | 工作目录 |
-| `--agent-teams` | 启用 Agent Teams |
-| `--teammate-mode` | Agent Teams 模式 (auto/in-process/tmux) |
-| `--permission-mode` | 权限模式 |
-| `--allowed-tools` | 允许的工具列表 |
+## 4) Hook 注册示例
 
-## Hook 配置
+将以下内容合并进 `~/.claude/settings.json`（路径按你机器实际调整）：
 
-在 `~/.claude/settings.json` 中注册：
 ```json
 {
   "hooks": {
-    "Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/notify-agi.sh", "timeout": 10}]}],
-    "SessionEnd": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/notify-agi.sh", "timeout": 10}]}]
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABS_PATH/hooks/notify-agi.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABS_PATH/hooks/notify-agi.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
 ```
 
-## 防重复机制
+---
 
-Hook 在 Stop 和 SessionEnd 都会触发。脚本使用 `.hook-lock` 文件去重：
-- 30秒内重复触发自动跳过
-- 只处理第一个事件（通常是 Stop）
+## 5) 环境变量（可选）
 
-## 结果文件
+- `OPENCLAW_HOOK_RESULT_ROOT`：结果目录（默认 `~/.openclaw/claude-code-results`）
+- `OPENCLAW_BIN`：openclaw 命令路径（默认自动 `command -v openclaw`）
+- `OPENCLAW_NOTIFY_CHANNEL`：默认通知渠道（默认 `feishu`）
+- `OPENCLAW_HOOK_LOCK_WINDOW_SECONDS`：去重窗口（默认 30）
+- `OPENCLAW_HOOK_MAX_SUMMARY_CHARS`：摘要长度（默认 1200）
 
-任务完成后，结果写入 `/home/ubuntu/clawd/data/claude-code-results/latest.json`：
-```json
-{
-  "session_id": "...",
-  "timestamp": "2026-02-10T01:02:33+00:00",
-  "task_name": "fibonacci-demo",
-  "telegram_group": "-5189558203",
-  "output": "...",
-  "status": "done"
-}
-```
+---
+
+## 6) 结果文件说明
+
+- `meta.json`：任务元信息 + 运行状态
+- `output.log`：Claude 标准输出日志
+- `result.json`：hook 汇总结果（最终可用于归档/二次处理）
+- `pending-wake.json`：供轮询/心跳机制消费
+
+---
+
+## 7) 与原仓库差异（重点）
+
+1. 去除硬编码 token；
+2. 全部改为 per-task 目录隔离；
+3. 消息推送改为 channel+target 参数化；
+4. 锁粒度改为 per-task；
+5. 保留原有 Claude runner 能力（PTY/tmux）。
+
+---
+
+## 8) 当前状态
+
+- 代码已改完；
+- 未自动部署到生产环境；
+- 适合先在测试机手动验证，再上线。

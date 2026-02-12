@@ -1,12 +1,11 @@
 {
-  "model": "claude-opus-4-5-20251101",
   "hooks": {
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "/home/ubuntu/.claude/hooks/notify-agi.sh",
+            "command": "/ABS_PATH/hooks/notify-agi.sh",
             "timeout": 10
           }
         ]
@@ -17,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/ubuntu/.claude/hooks/notify-agi.sh",
+            "command": "/ABS_PATH/hooks/notify-agi.sh",
             "timeout": 10
           }
         ]
