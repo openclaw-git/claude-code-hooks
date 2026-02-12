@@ -186,6 +186,31 @@ scripts/deploy_code_node.sh rollback
 scripts/deploy_code_node.sh rollback --backup ~/.openclaw/claude-hook-deploy-backups/<timestamp>
 ```
 
+### 异步提交（主 Agent 不阻塞等待）
+
+新增脚本：`scripts/submit_async_task.sh`
+
+用途：主 Agent 只负责“提交任务”，立即返回；Claude 完成后由 Hook 主动发消息到 Feishu/Telegram。
+
+```bash
+cd /home/lab803/Workspace/claude-code-hooks
+scripts/submit_async_task.sh \
+  -p "分析仓库并输出方案" \
+  -n "repo-plan" \
+  -w "/home/lab803/Workspace/BaiduPan" \
+  -c feishu -t "ou_xxx" \
+  --agent-teams --teammate-mode auto --permission-mode bypassPermissions
+```
+
+返回字段：
+- `TASK_ID`
+- `PID`
+- `LOG_FILE`
+
+说明：
+- 主 Agent 无需轮询等待结果；
+- 任务完成通知由 `hooks/notify-agi.sh` 自动推送（需 `-t` 指定目标）。
+
 ---
 
 ## 9) 本次主要问题修复
