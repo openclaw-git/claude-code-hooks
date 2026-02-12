@@ -88,7 +88,7 @@ merge_settings(){
         + [{"hooks":[{"type":"command","command":$cmd,"timeout":10}]}])
     | .hooks.SessionEnd = ((.hooks.SessionEnd // [])
         | map(select((.hooks // [])[0].command? != $cmd))
-        + [{"hooks":[{"type":"command","command":$cmd,"timeout":10}]})
+        + [{"hooks":[{"type":"command","command":$cmd,"timeout":10}]}])
   ' "$src" > "$tmp"
 
   mv "$tmp" "$src"
