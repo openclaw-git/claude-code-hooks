@@ -80,7 +80,8 @@ LOG_DIR="${HOME}/.openclaw/claude-code-results/submit-logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/${TASK_ID}.log"
 
-CMD="cd \"$REPO_DIR\" && scripts/dispatch-claude-code.sh -p \"$PROMPT\" -n \"$TASK_NAME\" -w \"$WORKDIR\" -c \"$CHANNEL\" -t \"$TARGET\" --task-id \"$TASK_ID\" $AGENT_TEAMS $TEAMMATE_MODE $PERMISSION_MODE $ALLOWED_TOOLS $MODEL"
+CLAUDE_BIN="$(command -v claude || true)"
+CMD="export CLAUDE_CODE_BIN=\"$CLAUDE_BIN\"; cd \"$REPO_DIR\" && scripts/dispatch-claude-code.sh -p \"$PROMPT\" -n \"$TASK_NAME\" -w \"$WORKDIR\" -c \"$CHANNEL\" -t \"$TARGET\" --task-id \"$TASK_ID\" $AGENT_TEAMS $TEAMMATE_MODE $PERMISSION_MODE $ALLOWED_TOOLS $MODEL"
 
 nohup bash -lc "$CMD" >"$LOG_FILE" 2>&1 &
 PID=$!
